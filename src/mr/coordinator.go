@@ -1,14 +1,16 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
-	"fmt"
 	"sync"
 	"time"
+	"github.com/google/uuid"
+	"strconv"
 )
 
 const (
@@ -17,19 +19,20 @@ const (
 )
 
 type TaskInfo struct {
-	TaskType       string
-	Finished       bool
-	Assigned       bool
-	TaskIdx        int
+	TaskType string
+	Finished bool
+	Assigned bool
+	TaskIdx  int
 }
 
 type TaskRunningInfo struct {
-	MapInputFilePath  string
-	Deadline       int64
-	WorkerId       int
-	TaskIdx         int
-	Finished       bool
-	reAssigned     bool
+	MapInputFilePath string
+	Deadline         int64
+	WorkerId         int
+	TaskIdx          int
+	Finished         bool
+	reAssigned       bool
+	TaskUUID         string
 }
 
 type Coordinator struct {
@@ -45,13 +48,12 @@ type Coordinator struct {
 	Finished bool
 }
 
-
 func TempMapTaskOutputFileName(workerId int, taskIdx int, reduceIdx int) string {
 	return fmt.Sprintf("temp-map-%d-%d-%d", workerId, taskIdx, reduceIdx)
 }
 
 func MapTaskOutputFileName(taskIdx int, reduceIdx int) string {
-	return fmt.Sprintf("map-%d-%d", taskIdx, reduceIdx)
+	return fmt.Sprintf("map-out-%d-%d", taskIdx, reduceIdx)
 }
 
 func TempReduceTaskOutputFileName(workerId int, taskIdx int) string {
@@ -62,19 +64,19 @@ func ReduceTaskOutputFileName(reduceIdx int) string {
 	return fmt.Sprintf("mr-out-%d", reduceIdx)
 }
 
-func mergeMapTaskOutput(workerId int, taskIdx int, nReduce int){
-	for i := 0; i < nReduce; i++{
+func mergeMapTaskOutput(workerId int, taskIdx int, nReduce int) {
+	for i := 0; i < nReduce; i++ {
 		file_name := TempMapTaskOutputFileName(workerId, taskIdx, i)
 		new_file_name := MapTaskOutputFileName(taskIdx, i)
 		err := os.Rename(file_name, new_file_name)
 		if err != nil {
 			panic(fmt.Errorf("fatal error: %v", err))
-			
+
 		}
 	}
 }
 
-func mergeReduceTaskOutput(workerId int, taskIdx int, nReduce int){
+func mergeReduceTaskOutput(workerId int, taskIdx int, nReduce int) {
 	file_name := TempReduceTaskOutputFileName(workerId, taskIdx)
 	new_file_name := ReduceTaskOutputFileName(taskIdx)
 	err := os.Rename(file_name, new_file_name)
@@ -82,7 +84,6 @@ func mergeReduceTaskOutput(workerId int, taskIdx int, nReduce int){
 		panic(fmt.Errorf("fatal error: %v", err))
 	}
 }
-
 
 // Your code here -- RPC handlers for the worker to call.
 
@@ -102,19 +103,22 @@ func (c *Coordinator) ApplyTask(args *ApplyTaskArgs, reply *ApplyTaskReply) erro
 	for file_path, taskInfo := range c.TasksQueue {
 		if !taskInfo.Assigned {
 
+			uuid := uuid.New().String()
 			reply.TaskType = taskInfo.TaskType
 			reply.TaskIdx = taskInfo.TaskIdx
 			reply.TaskFilePath = file_path
 			reply.NReduce = c.nReduce
 			reply.NMap = c.nMap
+			reply.TaskUUID = uuid
 
 			c.TasksRunningQueue = append(c.TasksRunningQueue, TaskRunningInfo{
-				MapInputFilePath:  file_path,
-				Deadline:       time.Now().Unix() + 10,
-				WorkerId:       args.WorkerId,
-				TaskIdx:        taskInfo.TaskIdx,
-				Finished:       false,
-				reAssigned:     false,
+				MapInputFilePath: file_path,
+				Deadline:         time.Now().Unix() + 10,
+				WorkerId:         args.WorkerId,
+				TaskIdx:          taskInfo.TaskIdx,
+				Finished:         false,
+				reAssigned:       false,
+				TaskUUID:         uuid,
 			})
 
 			taskInfo.Assigned = true
@@ -145,21 +149,22 @@ func (c *Coordinator) CheckTasksTimeout() {
 	}
 }
 
-func (c *Coordinator) SendTaskResult(result TaskResult) {
+func (c *Coordinator) SendTaskResult(result *TaskResult, reply *ExampleReply) error {
+	fmt.Println("send task result: ", result)
 	if result.TaskType != c.Stage {
-		return
+		return fmt.Errorf("task type error")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for i := range c.TasksRunningQueue {
 		runningTask := c.TasksRunningQueue[i]
-		if runningTask.TaskIdx == result.TaskIdx && runningTask.WorkerId == result.WorkerId && !runningTask.Finished {
+		if runningTask.TaskUUID == result.TaskUUID && !runningTask.Finished {
 			c.TasksRunningQueue[i].Finished = true
 			inputFilePath := runningTask.MapInputFilePath
 			taskInfo, ok := c.TasksQueue[inputFilePath]
 			if !ok {
 				log.Fatal("Task not found: ", inputFilePath)
-				return
+				return fmt.Errorf("task not found")
 			}
 			if !taskInfo.Finished {
 				taskInfo.Finished = true
@@ -167,14 +172,15 @@ func (c *Coordinator) SendTaskResult(result TaskResult) {
 
 				if c.Stage == TaskMap {
 					go mergeMapTaskOutput(result.WorkerId, result.TaskIdx, c.nReduce)
-				}else if c.Stage == TaskReduce {
+				} else if c.Stage == TaskReduce {
 					go mergeReduceTaskOutput(result.WorkerId, result.TaskIdx, c.nReduce)
 				}
 				c.channel <- true
 			}
-			return
+			return nil
 		}
 	}
+	return nil
 }
 
 func (c *Coordinator) main() {
@@ -196,11 +202,12 @@ func (c *Coordinator) main() {
 		if c.Stage == TaskMap {
 			c.mu.Lock()
 			tasksQueue := map[string]TaskInfo{}
-			for idx, _ := range c.TasksQueue {
-				tasksQueue[string(idx)] = TaskInfo{
-					TaskType:       TaskReduce,
-					Finished:       false,
-					Assigned:       false,
+			for idx := 0; idx < c.nReduce; idx++ {
+				tasksQueue[strconv.Itoa(idx)] = TaskInfo{
+					TaskType: TaskReduce,
+					Finished: false,
+					Assigned: false,
+					TaskIdx: idx,
 				}
 			}
 			c.TasksQueue = tasksQueue
@@ -208,7 +215,9 @@ func (c *Coordinator) main() {
 			c.Stage = TaskReduce
 			c.mu.Unlock()
 		} else {
+			c.mu.Lock()
 			c.Finished = true
+			c.mu.Unlock()
 			break
 		}
 	}
@@ -248,10 +257,10 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	for idx, f := range files {
 		c.TasksQueue[f] = TaskInfo{
-			TaskType:       c.Stage,
-			Finished:       false,
-			Assigned:       false,
-			TaskIdx:        idx,
+			TaskType: c.Stage,
+			Finished: false,
+			Assigned: false,
+			TaskIdx:  idx,
 		}
 	}
 	c.TasksRunningQueue = []TaskRunningInfo{}

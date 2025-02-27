@@ -29,19 +29,20 @@ type ApplyTaskArgs struct {
 }
 
 type ApplyTaskReply struct {
-	TaskType      string
-	NReduce       int
-	NMap          int
-	TaskFilePath  string
-	TaskIdx int
+	TaskType     string
+	NReduce      int
+	NMap         int
+	TaskFilePath string
+	TaskIdx      int
+	TaskUUID     string
 }
 
 type TaskResult struct {
 	WorkerId       int
 	TaskIdx        int
 	TaskType       string
-	OutputFilePath string
 	InputFilePath  string
+	TaskUUID       string
 }
 
 // Add your RPC definitions here.

@@ -6,8 +6,8 @@ import (
 	"log"
 	"net/rpc"
 	"os"
-	"strings"
 	"sort"
+	"strings"
 )
 
 // Map functions return a slice of KeyValue.
@@ -48,9 +48,9 @@ func reduceTaskReadInputFile(nMap int, taskIdx int) ([]string, error) {
 			return []string{}, err
 		}
 		fileContent_lines := strings.Split(string(fileContent), "\n")
-		if fileContent_lines[len(fileContent_lines) - 1] == ""{
-			fileContent_lines = fileContent_lines[:len(fileContent_lines) - 1]
-		} 
+		if fileContent_lines[len(fileContent_lines)-1] == "" {
+			fileContent_lines = fileContent_lines[:len(fileContent_lines)-1]
+		}
 		kvs = append(kvs, fileContent_lines...)
 	}
 	return kvs, nil
@@ -93,8 +93,12 @@ func Worker(mapf func(string, string) []KeyValue,
 				fmt.Println("Fatal error in worker: ", err)
 				continue
 			}
-		}else if reply.TaskType == TaskReduce {
-			vs, err :=reduceTaskReadInputFile(reply.NMap, reply.TaskIdx)
+			result := TaskResult{TaskType: reply.TaskType, TaskUUID: reply.TaskUUID, WorkerId: pid, TaskIdx: reply.TaskIdx, InputFilePath: reply.TaskFilePath}
+			reply := ExampleReply{}
+			call("Coordinator.SendTaskResult", &result, &reply)
+		} else if reply.TaskType == TaskReduce {
+			vs, err := reduceTaskReadInputFile(reply.NMap, reply.TaskIdx)
+			fmt.Println("Reduce task read input file. vs: ", len(vs))
 			if err != nil {
 				fmt.Println("Fatal error in worker: ", err)
 				continue
@@ -107,14 +111,19 @@ func Worker(mapf func(string, string) []KeyValue,
 				fmt.Println("Fatal error in worker: ", err)
 				continue
 			}
-			for i := 0; i < len(vs); i++ {
-				j := i + 1
-				for ; j < len(vs) && vs[j] == vs[i]; j++ {}
-				num := reducef(vs[i], vs[j:i])
-				fmt.Fprintf(outFile, "%v %v\n", vs[i], num)
+			left, right := 0, 0
+			for ; left < len(vs) && right < len(vs);{
+				right = left + 1
+				for ; right < len(vs) && vs[right] == vs[left]; right++ {}
+				num := reducef(vs[left], vs[left:right])
+				fmt.Fprintf(outFile, "%v %v\n", vs[left], num)
+				left = right
 			}
 			outFile.Close()
-		}else{
+			result := TaskResult{TaskType: reply.TaskType, TaskUUID: reply.TaskUUID, WorkerId: pid, TaskIdx: reply.TaskIdx, InputFilePath: reply.TaskFilePath}
+			reply := ExampleReply{}
+			call("Coordinator.SendTaskResult", &result, &reply)
+		} else {
 			break
 		}
 	}
