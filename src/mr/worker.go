@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"strings"
+	"sort"
 )
 
 // Map functions return a slice of KeyValue.
@@ -22,6 +24,38 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+func writeTempMapTaskOutputFile(pid int, taskIdx int, nReduce int, m map[int][]KeyValue) error {
+	for i := 0; i < nReduce; i++ {
+		f, err := os.Create(TempMapTaskOutputFileName(pid, taskIdx, i))
+		if err != nil {
+			fmt.Println("Fatal error:", err)
+			return err
+		}
+		for j := range m[i] {
+			fmt.Fprintf(f, "%v\n", m[i][j].Key)
+		}
+		f.Close()
+	}
+	return nil
+}
+
+func reduceTaskReadInputFile(nMap int, taskIdx int) ([]string, error) {
+	var kvs []string
+	for i := 0; i < nMap; i++ {
+		fileContent, err := os.ReadFile(MapTaskOutputFileName(i, taskIdx))
+		if err != nil {
+			fmt.Println("Fatal error in worker: ", err)
+			return []string{}, err
+		}
+		fileContent_lines := strings.Split(string(fileContent), "\n")
+		if fileContent_lines[len(fileContent_lines) - 1] == ""{
+			fileContent_lines = fileContent_lines[:len(fileContent_lines) - 1]
+		} 
+		kvs = append(kvs, fileContent_lines...)
+	}
+	return kvs, nil
+}
+
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
@@ -30,9 +64,14 @@ func Worker(mapf func(string, string) []KeyValue,
 		pid := os.Getpid()
 		args := ApplyTaskArgs{WorkerId: pid}
 		reply := ApplyTaskReply{}
+		fmt.Println("---->pid: ", pid, "apply task args: ", args, "reply: ", reply)
 
 		// send the RPC request, wait for the reply.
-		call("Coordinator.ApplyTask", &args, &reply)
+		ret := call("Coordinator.ApplyTask", &args, &reply)
+		if !ret {
+			break
+		}
+		fmt.Println("---->pid: ", pid, "reply: ", reply)
 		if reply.TaskType == TaskMap {
 			//读取文件
 			fileContent, err := os.ReadFile(reply.TaskFilePath)
@@ -46,22 +85,35 @@ func Worker(mapf func(string, string) []KeyValue,
 			m := map[int][]KeyValue{}
 			for i := range kva {
 				value := kva[i].Key
-				hash_value := ihash(value) % reply.nReduce
+				hash_value := ihash(value) % reply.NReduce
 				m[hash_value] = append(m[hash_value], kva[i])
 			}
-			for i := 0; i < reply.nReduce; i++ {
-				f, err := os.Create(fmt.Sprintf("mr-%d-%d-%d", pid, reply.TaskId, i))
-				if err != nil {
-					fmt.Println(err)
-					break
-				}
-				for j := range m[i] {
-					fmt.Fprintf(f, "%v %v\n", m[i][j].Key, m[i][j].Value)
-				}
-				f.Close()
+			err = writeTempMapTaskOutputFile(os.Getpid(), reply.TaskIdx, reply.NReduce, m)
+			if err != nil {
+				fmt.Println("Fatal error in worker: ", err)
+				continue
 			}
 		}else if reply.TaskType == TaskReduce {
-			
+			vs, err :=reduceTaskReadInputFile(reply.NMap, reply.TaskIdx)
+			if err != nil {
+				fmt.Println("Fatal error in worker: ", err)
+				continue
+			}
+			sort.Slice(vs, func(i, j int) bool {
+				return vs[i] < vs[j]
+			})
+			outFile, err := os.Create(TempReduceTaskOutputFileName(pid, reply.TaskIdx))
+			if err != nil {
+				fmt.Println("Fatal error in worker: ", err)
+				continue
+			}
+			for i := 0; i < len(vs); i++ {
+				j := i + 1
+				for ; j < len(vs) && vs[j] == vs[i]; j++ {}
+				num := reducef(vs[i], vs[j:i])
+				fmt.Fprintf(outFile, "%v %v\n", vs[i], num)
+			}
+			outFile.Close()
 		}else{
 			break
 		}

@@ -38,6 +38,7 @@ type Coordinator struct {
 	TasksRunningQueue []TaskRunningInfo
 	Stage             string
 	nReduce           int
+	nMap              int
 
 	mu       sync.Mutex
 	channel  chan bool
@@ -54,7 +55,7 @@ func MapTaskOutputFileName(taskIdx int, reduceIdx int) string {
 }
 
 func TempReduceTaskOutputFileName(workerId int, taskIdx int) string {
-	return fmt.Sprintf("temp-reduce-%d-%d-%d", workerId, taskIdx)
+	return fmt.Sprintf("temp-reduce-%d-%d", workerId, taskIdx)
 }
 
 func ReduceTaskOutputFileName(reduceIdx int) string {
@@ -67,7 +68,7 @@ func mergeMapTaskOutput(workerId int, taskIdx int, nReduce int){
 		new_file_name := MapTaskOutputFileName(taskIdx, i)
 		err := os.Rename(file_name, new_file_name)
 		if err != nil {
-			panic(fmt.Errorf("Fatal error: %v", err))
+			panic(fmt.Errorf("fatal error: %v", err))
 			
 		}
 	}
@@ -78,7 +79,7 @@ func mergeReduceTaskOutput(workerId int, taskIdx int, nReduce int){
 	new_file_name := ReduceTaskOutputFileName(taskIdx)
 	err := os.Rename(file_name, new_file_name)
 	if err != nil {
-		panic(fmt.Errorf("Fatal error: %v", err))
+		panic(fmt.Errorf("fatal error: %v", err))
 	}
 }
 
@@ -94,13 +95,18 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (c *Coordinator) ApplyTask(args *ApplyTaskArgs, reply *ApplyTaskReply) error {
+	fmt.Println("apply task args: ", args)
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	fmt.Println("apply task args. get lock")
 	for file_path, taskInfo := range c.TasksQueue {
 		if !taskInfo.Assigned {
 
 			reply.TaskType = taskInfo.TaskType
 			reply.TaskIdx = taskInfo.TaskIdx
 			reply.TaskFilePath = file_path
+			reply.NReduce = c.nReduce
+			reply.NMap = c.nMap
 
 			c.TasksRunningQueue = append(c.TasksRunningQueue, TaskRunningInfo{
 				MapInputFilePath:  file_path,
@@ -110,18 +116,20 @@ func (c *Coordinator) ApplyTask(args *ApplyTaskArgs, reply *ApplyTaskReply) erro
 				Finished:       false,
 				reAssigned:     false,
 			})
+
+			taskInfo.Assigned = true
+			c.TasksQueue[file_path] = taskInfo
 			return nil
 		}
 	}
-	c.mu.Unlock()
 
 	return nil
 }
 
 func (c *Coordinator) CheckTasksTimeout() {
 	for {
+		c.mu.Lock()
 		if len(c.TasksRunningQueue) > 0 {
-			c.mu.Lock()
 			for i := range c.TasksRunningQueue {
 				runningTask := c.TasksRunningQueue[i]
 				if runningTask.Deadline > time.Now().Unix() && !runningTask.Finished && !runningTask.reAssigned {
@@ -131,8 +139,8 @@ func (c *Coordinator) CheckTasksTimeout() {
 					}
 				}
 			}
-			c.mu.Unlock()
 		}
+		c.mu.Unlock()
 		time.Sleep(time.Second)
 	}
 }
@@ -249,6 +257,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.TasksRunningQueue = []TaskRunningInfo{}
 	c.channel = make(chan bool)
 	c.Finished = false
+	c.nMap = len(files)
 
 	go c.main()
 

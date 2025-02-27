@@ -30,7 +30,8 @@ type ApplyTaskArgs struct {
 
 type ApplyTaskReply struct {
 	TaskType      string
-	nReduce       int
+	NReduce       int
+	NMap          int
 	TaskFilePath  string
 	TaskIdx int
 }
