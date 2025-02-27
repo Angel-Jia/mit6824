@@ -35,6 +35,7 @@ type ApplyTaskReply struct {
 	TaskFilePath string
 	TaskIdx      int
 	TaskUUID     string
+	AllFinished  bool
 }
 
 type TaskResult struct {

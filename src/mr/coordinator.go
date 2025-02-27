@@ -7,10 +7,11 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"strconv"
 	"sync"
 	"time"
+
 	"github.com/google/uuid"
-	"strconv"
 )
 
 const (
@@ -125,20 +126,20 @@ func (c *Coordinator) ApplyTask(args *ApplyTaskArgs, reply *ApplyTaskReply) erro
 		}
 	}
 
+	reply.AllFinished = true
+
 	return nil
 }
 
 func (c *Coordinator) CheckTasksTimeout() {
 	for {
 		c.mu.Lock()
-		if len(c.TasksRunningQueue) > 0 {
-			for i := range c.TasksRunningQueue {
-				runningTask := c.TasksRunningQueue[i]
-				if runningTask.Deadline > time.Now().Unix() && !runningTask.Finished && !runningTask.reAssigned {
-					if taskInfo, ok := c.TasksQueue[runningTask.MapInputFilePath]; ok {
-						taskInfo.Assigned = false
-						c.TasksQueue[runningTask.MapInputFilePath] = taskInfo
-					}
+		for i := range c.TasksRunningQueue {
+			runningTask := c.TasksRunningQueue[i]
+			if runningTask.Deadline < time.Now().Unix() && !runningTask.Finished && !runningTask.reAssigned {
+				if taskInfo, ok := c.TasksQueue[runningTask.MapInputFilePath]; ok && !taskInfo.Finished {
+					taskInfo.Assigned = false
+					c.TasksQueue[runningTask.MapInputFilePath] = taskInfo
 				}
 			}
 		}
@@ -204,7 +205,7 @@ func (c *Coordinator) main() {
 					TaskType: TaskReduce,
 					Finished: false,
 					Assigned: false,
-					TaskIdx: idx,
+					TaskIdx:  idx,
 				}
 			}
 			c.TasksQueue = tasksQueue

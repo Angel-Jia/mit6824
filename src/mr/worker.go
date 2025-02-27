@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Map functions return a slice of KeyValue.
@@ -32,26 +33,31 @@ func writeTempMapTaskOutputFile(pid int, taskIdx int, nReduce int, m map[int][]K
 			return err
 		}
 		for j := range m[i] {
-			fmt.Fprintf(f, "%v\n", m[i][j].Key)
+			fmt.Fprintf(f, "%v %v\n", m[i][j].Key, m[i][j].Value)
 		}
 		f.Close()
 	}
 	return nil
 }
 
-func reduceTaskReadInputFile(nMap int, taskIdx int) ([]string, error) {
-	var kvs []string
+func reduceTaskReadInputFile(nMap int, taskIdx int) ([]KeyValue, error) {
+	var kvs []KeyValue
 	for i := 0; i < nMap; i++ {
 		fileContent, err := os.ReadFile(MapTaskOutputFileName(i, taskIdx))
 		if err != nil {
 			fmt.Println("Fatal error in worker: ", err)
-			return []string{}, err
+			return []KeyValue{}, err
 		}
-		fileContent_lines := strings.Split(string(fileContent), "\n")
-		if fileContent_lines[len(fileContent_lines)-1] == "" {
-			fileContent_lines = fileContent_lines[:len(fileContent_lines)-1]
+		fileContentLines := strings.Split(string(fileContent), "\n")
+		for i := 0; i < len(fileContentLines); i++ {
+			line := strings.TrimSpace(fileContentLines[i])
+			if len(line) == 0 {continue}
+			idx := strings.Index(line, " ")
+			if idx == -1 {continue}
+			key := line[:idx]
+			value := line[idx+1:]
+			kvs = append(kvs, KeyValue{Key: key, Value: value})
 		}
-		kvs = append(kvs, fileContent_lines...)
 	}
 	return kvs, nil
 }
@@ -60,16 +66,23 @@ func reduceTaskReadInputFile(nMap int, taskIdx int) ([]string, error) {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
+	pid := os.Getpid()
+	fmt.Println("worker pid: ", pid , " start!")
+	defer fmt.Println("worker pid: ", pid , " end!")
+
+	retryCount := 0
+
 	for {
-		pid := os.Getpid()
 		args := ApplyTaskArgs{WorkerId: pid}
 		reply := ApplyTaskReply{}
 
 		// send the RPC request, wait for the reply.
-		ret := call("Coordinator.ApplyTask", &args, &reply)
-		if !ret {
+		call("Coordinator.ApplyTask", &args, &reply)
+
+		if reply.AllFinished {
 			break
 		}
+
 		if reply.TaskType == TaskMap {
 			//读取文件
 			fileContent, err := os.ReadFile(reply.TaskFilePath)
@@ -80,13 +93,13 @@ func Worker(mapf func(string, string) []KeyValue,
 
 			kva := mapf(reply.TaskFilePath, string(fileContent))
 
-			m := map[int][]KeyValue{}
+			kvaMap := map[int][]KeyValue{}
 			for i := range kva {
-				value := kva[i].Key
-				hash_value := ihash(value) % reply.NReduce
-				m[hash_value] = append(m[hash_value], kva[i])
+				key := kva[i].Key
+				hashKey := ihash(key) % reply.NReduce
+				kvaMap[hashKey] = append(kvaMap[hashKey], kva[i])
 			}
-			err = writeTempMapTaskOutputFile(os.Getpid(), reply.TaskIdx, reply.NReduce, m)
+			err = writeTempMapTaskOutputFile(os.Getpid(), reply.TaskIdx, reply.NReduce, kvaMap)
 			if err != nil {
 				fmt.Println("Fatal error in worker: ", err)
 				continue
@@ -95,25 +108,29 @@ func Worker(mapf func(string, string) []KeyValue,
 			reply := ExampleReply{}
 			call("Coordinator.SendTaskResult", &result, &reply)
 		} else if reply.TaskType == TaskReduce {
-			vs, err := reduceTaskReadInputFile(reply.NMap, reply.TaskIdx)
+			kvs, err := reduceTaskReadInputFile(reply.NMap, reply.TaskIdx)
 			if err != nil {
 				fmt.Println("Fatal error in worker: ", err)
 				continue
 			}
-			sort.Slice(vs, func(i, j int) bool {
-				return vs[i] < vs[j]
+			sort.Slice(kvs, func(i, j int) bool {
+				return kvs[i].Key < kvs[j].Key
 			})
 			outFile, err := os.Create(TempReduceTaskOutputFileName(pid, reply.TaskIdx))
 			if err != nil {
 				fmt.Println("Fatal error in worker: ", err)
 				continue
+
 			}
 			left, right := 0, 0
-			for ; left < len(vs) && right < len(vs);{
+			for ; left < len(kvs) && right < len(kvs);{
 				right = left + 1
-				for ; right < len(vs) && vs[right] == vs[left]; right++ {}
-				num := reducef(vs[left], vs[left:right])
-				fmt.Fprintf(outFile, "%v %v\n", vs[left], num)
+				values := []string{kvs[left].Value}
+				for ; right < len(kvs) && kvs[right].Key == kvs[left].Key; right++ {
+					values = append(values, kvs[right].Value)
+				}
+				ret := reducef(kvs[left].Key, values)
+				fmt.Fprintf(outFile, "%v %v\n", kvs[left].Key, ret)
 				left = right
 			}
 			outFile.Close()
@@ -121,7 +138,11 @@ func Worker(mapf func(string, string) []KeyValue,
 			reply := ExampleReply{}
 			call("Coordinator.SendTaskResult", &result, &reply)
 		} else {
-			break
+			retryCount += 1
+			if retryCount >= 3 {
+				break
+			}
+			time.Sleep(time.Millisecond * 200)
 		}
 	}
 
