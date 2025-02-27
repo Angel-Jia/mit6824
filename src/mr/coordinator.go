@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"runtime"
+	_ "net/http/pprof"
 )
 
 const (
@@ -97,8 +99,13 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (c *Coordinator) ApplyTask(args *ApplyTaskArgs, reply *ApplyTaskReply) error {
+	log.Printf("ApplyTask: %v\n", args)
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	log.Printf("--> ApplyTask get lock\n")
+	defer func() {
+		c.mu.Unlock()
+		log.Printf("--> ApplyTask unlock\n")
+	}()
 	for file_path, taskInfo := range c.TasksQueue {
 		if !taskInfo.Assigned {
 
@@ -133,7 +140,9 @@ func (c *Coordinator) ApplyTask(args *ApplyTaskArgs, reply *ApplyTaskReply) erro
 
 func (c *Coordinator) CheckTasksTimeout() {
 	for {
+		log.Printf("--> CheckTasksTimeout\n")
 		c.mu.Lock()
+		log.Printf("--> CheckTasksTimeout get lock\n")
 		for i := range c.TasksRunningQueue {
 			runningTask := c.TasksRunningQueue[i]
 			if runningTask.Deadline < time.Now().Unix() && !runningTask.Finished && !runningTask.reAssigned {
@@ -144,6 +153,7 @@ func (c *Coordinator) CheckTasksTimeout() {
 			}
 		}
 		c.mu.Unlock()
+		log.Printf("--> CheckTasksTimeout unlock\n")
 		time.Sleep(time.Second)
 	}
 }
@@ -152,8 +162,13 @@ func (c *Coordinator) SendTaskResult(result *TaskResult, reply *ExampleReply) er
 	if result.TaskType != c.Stage {
 		return fmt.Errorf("task type error")
 	}
+	log.Printf("--> SendTaskResult\n")
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	log.Printf("--> SendTaskResult get lock\n")
+	defer func() {
+		c.mu.Unlock()
+		log.Printf("--> SendTaskResult unlock\n")
+	}()
 	for i := range c.TasksRunningQueue {
 		runningTask := c.TasksRunningQueue[i]
 		if runningTask.TaskUUID == result.TaskUUID && !runningTask.Finished {
@@ -182,11 +197,16 @@ func (c *Coordinator) SendTaskResult(result *TaskResult, reply *ExampleReply) er
 }
 
 func (c *Coordinator) main() {
+	go func() { http.ListenAndServe("localhost:6060", nil) }()
+    runtime.SetMutexProfileFraction(1)
+    runtime.SetBlockProfileRate(1)
 	go c.CheckTasksTimeout()
 	for {
 		<-c.channel
 		allFinished := true
+		log.Printf("--> main\n")
 		c.mu.Lock()
+		log.Printf("--> main get lock\n")
 		for _, taskInfo := range c.TasksQueue {
 			if !taskInfo.Finished {
 				allFinished = false
@@ -194,11 +214,15 @@ func (c *Coordinator) main() {
 			}
 		}
 		c.mu.Unlock()
+		log.Printf("--> main unlock\n")
+
 		if !allFinished {
 			continue
 		}
 		if c.Stage == TaskMap {
+			log.Printf("--> main TaskMap\n")
 			c.mu.Lock()
+			log.Printf("--> main TaskMap get lock\n")
 			tasksQueue := map[string]TaskInfo{}
 			for idx := 0; idx < c.nReduce; idx++ {
 				tasksQueue[strconv.Itoa(idx)] = TaskInfo{
@@ -212,10 +236,14 @@ func (c *Coordinator) main() {
 			c.TasksRunningQueue = []TaskRunningInfo{}
 			c.Stage = TaskReduce
 			c.mu.Unlock()
+			log.Printf("--> main TaskMap unlock\n")
 		} else {
+			log.Printf("--> main TaskReduce\n")
 			c.mu.Lock()
+			log.Printf("--> main TaskReduce get lock\n")
 			c.Finished = true
 			c.mu.Unlock()
+			log.Printf("--> main TaskReduce unlock\n")
 			break
 		}
 	}
@@ -238,8 +266,13 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
+	log.Printf("--> Done\n")
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	log.Printf("--> Done get lock\n")
+	defer func() {
+		c.mu.Unlock()
+		log.Printf("--> Done unlock\n")
+	}()
 
 	return c.Finished
 }
@@ -262,7 +295,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		}
 	}
 	c.TasksRunningQueue = []TaskRunningInfo{}
-	c.channel = make(chan bool)
+	c.channel = make(chan bool, 10)
 	c.Finished = false
 	c.nMap = len(files)
 
