@@ -64,14 +64,12 @@ func Worker(mapf func(string, string) []KeyValue,
 		pid := os.Getpid()
 		args := ApplyTaskArgs{WorkerId: pid}
 		reply := ApplyTaskReply{}
-		fmt.Println("---->pid: ", pid, "apply task args: ", args, "reply: ", reply)
 
 		// send the RPC request, wait for the reply.
 		ret := call("Coordinator.ApplyTask", &args, &reply)
 		if !ret {
 			break
 		}
-		fmt.Println("---->pid: ", pid, "reply: ", reply)
 		if reply.TaskType == TaskMap {
 			//读取文件
 			fileContent, err := os.ReadFile(reply.TaskFilePath)
@@ -98,7 +96,6 @@ func Worker(mapf func(string, string) []KeyValue,
 			call("Coordinator.SendTaskResult", &result, &reply)
 		} else if reply.TaskType == TaskReduce {
 			vs, err := reduceTaskReadInputFile(reply.NMap, reply.TaskIdx)
-			fmt.Println("Reduce task read input file. vs: ", len(vs))
 			if err != nil {
 				fmt.Println("Fatal error in worker: ", err)
 				continue

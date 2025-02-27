@@ -96,10 +96,8 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (c *Coordinator) ApplyTask(args *ApplyTaskArgs, reply *ApplyTaskReply) error {
-	fmt.Println("apply task args: ", args)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	fmt.Println("apply task args. get lock")
 	for file_path, taskInfo := range c.TasksQueue {
 		if !taskInfo.Assigned {
 
@@ -150,7 +148,6 @@ func (c *Coordinator) CheckTasksTimeout() {
 }
 
 func (c *Coordinator) SendTaskResult(result *TaskResult, reply *ExampleReply) error {
-	fmt.Println("send task result: ", result)
 	if result.TaskType != c.Stage {
 		return fmt.Errorf("task type error")
 	}
