@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"sync/atomic"
 	// "runtime"
 	// _ "net/http/pprof"
 )
@@ -48,7 +49,8 @@ type Coordinator struct {
 
 	mu       sync.Mutex
 	channel  chan bool
-	Finished bool
+	Finished int32
+	TasksRemaining int32
 }
 
 func TempMapTaskOutputFileName(workerId int, taskIdx int, reduceIdx int) string {
@@ -136,9 +138,10 @@ func (c *Coordinator) ApplyTask(args *ApplyTaskArgs, reply *ApplyTaskReply) erro
 func (c *Coordinator) CheckTasksTimeout() {
 	for {
 		c.mu.Lock()
+		timeNow := time.Now().Unix()
 		for i := range c.TasksRunningQueue {
 			runningTask := c.TasksRunningQueue[i]
-			if runningTask.Deadline < time.Now().Unix() && !runningTask.Finished && !runningTask.reAssigned {
+			if runningTask.Deadline < timeNow && !runningTask.Finished && !runningTask.reAssigned {
 				if taskInfo, ok := c.TasksQueue[runningTask.MapInputFilePath]; ok && !taskInfo.Finished {
 					taskInfo.Assigned = false
 					c.TasksQueue[runningTask.MapInputFilePath] = taskInfo
@@ -168,13 +171,19 @@ func (c *Coordinator) SendTaskResult(result *TaskResult, reply *ExampleReply) er
 			if !taskInfo.Finished {
 				taskInfo.Finished = true
 				c.TasksQueue[inputFilePath] = taskInfo
+				c.TasksRemaining--
+				if c.TasksRemaining < 0{
+					panic("fatal error: tasks remaining < 0")
+				}
+				if c.TasksRemaining == 0 {
+					c.channel <- true
+				}
 
 				if c.Stage == TaskMap {
 					go mergeMapTaskOutput(result.WorkerId, result.TaskIdx, c.nReduce)
 				} else if c.Stage == TaskReduce {
 					go mergeReduceTaskOutput(result.WorkerId, result.TaskIdx, c.nReduce)
 				}
-				c.channel <- true
 			}
 			return nil
 		}
@@ -189,17 +198,7 @@ func (c *Coordinator) main() {
 	go c.CheckTasksTimeout()
 	for {
 		<-c.channel
-		allFinished := true
-		c.mu.Lock()
-		for _, taskInfo := range c.TasksQueue {
-			if !taskInfo.Finished {
-				allFinished = false
-				break
-			}
-		}
-		c.mu.Unlock()
-
-		if !allFinished {
+		if atomic.LoadInt32(&c.TasksRemaining) > 0 {
 			continue
 		}
 		if c.Stage == TaskMap {
@@ -216,11 +215,10 @@ func (c *Coordinator) main() {
 			c.TasksQueue = tasksQueue
 			c.TasksRunningQueue = []TaskRunningInfo{}
 			c.Stage = TaskReduce
+			c.TasksRemaining = int32(len(c.TasksQueue))
 			c.mu.Unlock()
 		} else {
-			c.mu.Lock()
-			c.Finished = true
-			c.mu.Unlock()
+			atomic.AddInt32(&c.Finished, 1)
 			break
 		}
 	}
@@ -243,10 +241,7 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.Finished
+	return atomic.LoadInt32(&c.Finished) > 0
 }
 
 // create a Coordinator.
@@ -268,7 +263,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	}
 	c.TasksRunningQueue = []TaskRunningInfo{}
 	c.channel = make(chan bool, 10)
-	c.Finished = false
+	c.Finished = 0
+	c.TasksRemaining = int32(len(files))
 	c.nMap = len(files)
 
 	go c.main()
