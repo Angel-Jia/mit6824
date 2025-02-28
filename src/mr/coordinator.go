@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"runtime"
-	_ "net/http/pprof"
+	// "runtime"
+	// _ "net/http/pprof"
 )
 
 const (
@@ -197,9 +197,9 @@ func (c *Coordinator) SendTaskResult(result *TaskResult, reply *ExampleReply) er
 }
 
 func (c *Coordinator) main() {
-	go func() { http.ListenAndServe("localhost:6060", nil) }()
-    runtime.SetMutexProfileFraction(1)
-    runtime.SetBlockProfileRate(1)
+	// go func() { http.ListenAndServe("localhost:6060", nil) }()
+    // runtime.SetMutexProfileFraction(1)
+    // runtime.SetBlockProfileRate(1)
 	go c.CheckTasksTimeout()
 	for {
 		<-c.channel
