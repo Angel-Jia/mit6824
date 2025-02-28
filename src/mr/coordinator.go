@@ -20,6 +20,7 @@ import (
 const (
 	TaskMap    = "Map"
 	TaskReduce = "Reduce"
+	TaskWait   = "Wait"
 )
 
 type TaskInfo struct {
@@ -101,6 +102,11 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (c *Coordinator) ApplyTask(args *ApplyTaskArgs, reply *ApplyTaskReply) error {
+	if atomic.LoadInt32(&c.Finished) > 0 {
+		reply.AllFinished = true
+		return nil
+	}
+	reply.TaskType = TaskWait
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for file_path, taskInfo := range c.TasksQueue {
@@ -129,9 +135,6 @@ func (c *Coordinator) ApplyTask(args *ApplyTaskArgs, reply *ApplyTaskReply) erro
 			return nil
 		}
 	}
-
-	reply.AllFinished = true
-
 	return nil
 }
 

@@ -77,8 +77,17 @@ func Worker(mapf func(string, string) []KeyValue,
 		reply := ApplyTaskReply{}
 
 		// send the RPC request, wait for the reply.
-		call("Coordinator.ApplyTask", &args, &reply)
+		ret := call("Coordinator.ApplyTask", &args, &reply)
+		if !ret {
+			retryCount += 1
+			if retryCount >= 2 {
+				break
+			}
+			time.Sleep(time.Millisecond * 50)
+			continue
+		}
 
+		retryCount = 0
 		if reply.AllFinished {
 			break
 		}
@@ -137,12 +146,8 @@ func Worker(mapf func(string, string) []KeyValue,
 			result := TaskResult{TaskType: reply.TaskType, TaskUUID: reply.TaskUUID, WorkerId: pid, TaskIdx: reply.TaskIdx, InputFilePath: reply.TaskFilePath}
 			reply := ExampleReply{}
 			call("Coordinator.SendTaskResult", &result, &reply)
-		} else {
-			retryCount += 1
-			if retryCount >= 3 {
-				break
-			}
-			time.Sleep(time.Millisecond * 200)
+		} else if reply.TaskType == TaskWait {
+			time.Sleep(time.Millisecond * 100)
 		}
 	}
 
